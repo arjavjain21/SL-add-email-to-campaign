@@ -52,10 +52,13 @@ Set these in Streamlit Cloud or create a `.env` file locally:
 
 ```bash
 SMARTLEAD_API_KEY=your_api_key_here
+APP_PASSWORD=strong_password_for_app_access
 BATCH_SIZE=50
 MAX_FILE_SIZE_MB=200
 LOG_LEVEL=INFO
 ```
+
+**Security note:** The app requires `APP_PASSWORD` to be defined in `st.secrets` (or `.streamlit/secrets.toml` for Streamlit Cloud). If the secret is missing or the entered password is incorrect, the application will stop and display a clear error so deployments fail fast rather than running unprotected.
 
 ### Getting Your Smartlead API Key
 
