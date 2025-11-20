@@ -20,6 +20,16 @@ class EmailDataProcessor:
         normalized = email.strip().lower()
         return normalized if self.email_pattern.match(normalized) else ""
 
+    def _find_email_column(self, df: pd.DataFrame, email_column: str = 'email') -> str:
+        """Locate the email column in a dataframe."""
+        email_columns = [email_column, 'Email', 'EMAIL', 'email_address', 'emailaddress']
+
+        for col in email_columns:
+            if col in df.columns:
+                return col
+
+        raise ValueError("No email column found in CSV. Expected columns: " + ", ".join(email_columns))
+
     def build_campaign_email_lookup(self, campaign_accounts: List[Dict]) -> Dict[str, int]:
         """Create a lookup of normalized emails for accounts already in the campaign."""
 
@@ -47,24 +57,19 @@ class EmailDataProcessor:
         """Extract email addresses from CSV content"""
         try:
             df = pd.read_csv(io.StringIO(csv_content))
+            email_col = self._find_email_column(df, email_column)
 
-            # Try common email column names
-            email_columns = [email_column, 'Email', 'EMAIL', 'email_address', 'emailaddress']
+            emails = df[email_col].dropna().astype(str).tolist()
+            valid_emails = []
+            for email in emails:
+                normalized_email = self._normalize_email(email)
+                if normalized_email:
+                    valid_emails.append(normalized_email)
+                else:
+                    logger.warning(f"Invalid email format: {email}")
 
-            for col in email_columns:
-                if col in df.columns:
-                    emails = df[col].dropna().astype(str).tolist()
-                    valid_emails = []
-                    for email in emails:
-                        email = email.strip().lower()
-                        if self.email_pattern.match(email):
-                            valid_emails.append(email)
-                        else:
-                            logger.warning(f"Invalid email format: {email}")
-
-                    return list(set(valid_emails))  # Remove duplicates
-
-            raise ValueError("No email column found in CSV. Expected columns: " + ", ".join(email_columns))
+            # Preserve order while removing duplicates
+            return list(dict.fromkeys(valid_emails))
 
         except Exception as e:
             logger.error(f"Error processing CSV: {e}")
@@ -73,11 +78,30 @@ class EmailDataProcessor:
     def extract_emails_from_uploaded_file(self, uploaded_file, email_column: str = 'email') -> List[str]:
         """Extract emails from Streamlit uploaded file"""
         try:
-            # Read file content
-            stringio = io.StringIO(uploaded_file.read().decode("utf-8"))
-            return self.extract_emails_from_csv_string(stringio.getvalue(), email_column)
+            dataframe, emails = self.load_csv_with_emails(uploaded_file, email_column)
+            return emails
         except UnicodeDecodeError:
             raise ValueError("File encoding not supported. Please save as UTF-8.")
+
+    def load_csv_with_emails(self, uploaded_file, email_column: str = 'email') -> Tuple[pd.DataFrame, List[str]]:
+        """Load a CSV file and return a dataframe along with normalized email list."""
+        try:
+            content = uploaded_file.read().decode("utf-8")
+            df = pd.read_csv(io.StringIO(content))
+
+            email_col = self._find_email_column(df, email_column)
+            df['normalized_email'] = df[email_col].astype(str).apply(self._normalize_email)
+
+            # Collect valid emails, preserving order and removing duplicates
+            valid_emails = [email for email in df['normalized_email'].tolist() if email]
+            unique_emails = list(dict.fromkeys(valid_emails))
+
+            return df, unique_emails
+        except UnicodeDecodeError:
+            raise ValueError("File encoding not supported. Please save as UTF-8.")
+        except Exception as e:
+            logger.error(f"Error loading CSV file: {e}")
+            raise ValueError(f"Failed to process CSV: {str(e)}")
 
     def map_emails_to_account_ids(self, emails: List[str], email_accounts: List[Dict]) -> Dict[str, int]:
         """Map email addresses to account IDs using Smartlead account data"""
