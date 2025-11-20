@@ -64,6 +64,37 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+
+def enforce_app_password():
+    """Require a password before rendering the app."""
+    app_password = st.secrets.get("APP_PASSWORD") if hasattr(st, "secrets") else None
+
+    if not app_password:
+        st.error("Application password not configured. Please set `APP_PASSWORD` in Streamlit secrets.")
+        st.stop()
+
+    if st.session_state.get("app_authenticated"):
+        return True
+
+    st.title("🔒 Secure Access")
+    st.write("Enter the application password to continue.")
+
+    with st.form("app_password_form"):
+        password_input = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Unlock")
+
+    if submitted:
+        if password_input == app_password:
+            st.session_state.app_authenticated = True
+            st.success("Access granted. Loading application...")
+            st.rerun()
+        else:
+            st.error("Incorrect password. Please try again.")
+            st.stop()
+
+    # Stop rendering the rest of the app until authenticated
+    st.stop()
+
 def validate_environment():
     """Validate required environment variables"""
     required_vars = []
@@ -603,6 +634,8 @@ async def step_5_process():
 
 def main():
     """Main application flow"""
+    enforce_app_password()
+
     # Validate environment and initialize session state
     validate_environment()
     initialize_session_state()
