@@ -387,12 +387,8 @@ def step_4_preview():
                     st.session_state.selected_campaign['id']
                 )
 
-                # Create mapping of existing accounts
-                existing_mapping = {}
-                for account in existing_campaign_accounts:
-                    email = account.get('username', '').lower()
-                    if email and '@' in email:
-                        existing_mapping[email] = account.get('id')
+                # Create mapping of existing accounts using normalized email fields
+                existing_mapping = processor.build_campaign_email_lookup(existing_campaign_accounts)
 
                 # Analyze changes
                 st.session_state.analysis = processor.analyze_changes(
