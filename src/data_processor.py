@@ -12,6 +12,37 @@ class EmailDataProcessor:
     def __init__(self):
         self.email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
 
+    def _normalize_email(self, email: str) -> str:
+        """Normalize an email address to a comparable format."""
+        if not isinstance(email, str):
+            return ""
+
+        normalized = email.strip().lower()
+        return normalized if self.email_pattern.match(normalized) else ""
+
+    def build_campaign_email_lookup(self, campaign_accounts: List[Dict]) -> Dict[str, int]:
+        """Create a lookup of normalized emails for accounts already in the campaign."""
+
+        email_lookup: Dict[str, int] = {}
+
+        for account in campaign_accounts:
+            account_id = account.get('id')
+            if not account_id:
+                logger.warning(f"Skipping campaign account without ID: {account}")
+                continue
+
+            # Collect unique normalized emails for this account
+            normalized_emails = set()
+            for field in ['username', 'from_email', 'email']:
+                normalized_email = self._normalize_email(account.get(field, ''))
+                if normalized_email:
+                    normalized_emails.add(normalized_email)
+
+            for normalized_email in normalized_emails:
+                email_lookup[normalized_email] = account_id
+
+        return email_lookup
+
     def extract_emails_from_csv_string(self, csv_content: str, email_column: str = 'email') -> List[str]:
         """Extract email addresses from CSV content"""
         try:
