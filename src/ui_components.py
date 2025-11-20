@@ -5,6 +5,41 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
+class ApiKeyInput:
+    """Component for handling API key input and display"""
+
+    MASK_SUFFIX = "****"
+
+    @staticmethod
+    def mask(api_key: str) -> str:
+        """Mask an API key so only the first four characters are visible."""
+        if not api_key:
+            return ""
+
+        return f"{api_key[:4]}{ApiKeyInput.MASK_SUFFIX}"
+
+    @staticmethod
+    def render(api_key: str, key: str = "api_key_input") -> str:
+        """Render API key input without show/hide toggle while preserving full value."""
+        masked_value = ApiKeyInput.mask(api_key)
+
+        input_value = st.text_input(
+            "Smartlead API Key",
+            value=masked_value,
+            help="Enter your Smartlead API key",
+            key=key,
+        )
+
+        if not input_value:
+            return ""
+
+        # If the user didn't change the masked value, keep the original key
+        if api_key and input_value == masked_value:
+            return api_key
+
+        return input_value.strip()
+
 class CampaignSelector:
     """Component for selecting Smartlead campaigns"""
 

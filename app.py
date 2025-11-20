@@ -9,7 +9,13 @@ from dotenv import load_dotenv
 
 from src.api_client import SmartleadClient
 from src.data_processor import EmailDataProcessor
-from src.ui_components import CampaignSelector, EmailUploader, ProgressDisplay, SummaryDisplay
+from src.ui_components import (
+    ApiKeyInput,
+    CampaignSelector,
+    EmailUploader,
+    ProgressDisplay,
+    SummaryDisplay,
+)
 
 # Load environment variables
 load_dotenv()
@@ -113,12 +119,7 @@ def render_sidebar():
 
         # API Key input
         st.subheader("🔑 Configuration")
-        api_key = st.text_input(
-            "Smartlead API Key",
-            type="password",
-            value=st.session_state.api_key,
-            help="Enter your Smartlead API key"
-        )
+        api_key = ApiKeyInput.render(st.session_state.api_key)
 
         if api_key != st.session_state.api_key:
             st.session_state.api_key = api_key
