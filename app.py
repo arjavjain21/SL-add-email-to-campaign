@@ -133,12 +133,16 @@ def initialize_session_state():
         st.session_state.email_accounts = []
     if 'csv_emails' not in st.session_state:
         st.session_state.csv_emails = []
+    if 'csv_dataframe' not in st.session_state:
+        st.session_state.csv_dataframe = None
     if 'email_mappings' not in st.session_state:
         st.session_state.email_mappings = {}
     if 'analysis' not in st.session_state:
         st.session_state.analysis = {}
     if 'processing_started' not in st.session_state:
         st.session_state.processing_started = False
+    if 'processing_status' not in st.session_state:
+        st.session_state.processing_status = {}
     if 'error_count' not in st.session_state:
         st.session_state.error_count = 0
 
@@ -185,6 +189,34 @@ def render_sidebar():
                 del st.session_state[key]
             initialize_session_state()
             st.rerun()
+
+
+def build_results_dataframe():
+    """Create a dataframe with status information for download."""
+    if st.session_state.csv_dataframe is None:
+        return None
+
+    status_map = st.session_state.get('processing_status', {})
+    result_df = st.session_state.csv_dataframe.copy()
+
+    def lookup_status(normalized_email: str):
+        if not isinstance(normalized_email, str) or not normalized_email:
+            return ("invalid_email", "Invalid email format")
+
+        info = status_map.get(normalized_email)
+        if info:
+            return (info.get('status', 'unknown'), info.get('message', ''))
+
+        return ("not_found", "Email account not found in Smartlead")
+
+    status_detail = result_df['normalized_email'].apply(lookup_status)
+    result_df['status'] = status_detail.apply(lambda item: item[0])
+    result_df['status_detail'] = status_detail.apply(lambda item: item[1])
+
+    if 'normalized_email' in result_df.columns:
+        result_df = result_df.drop(columns=['normalized_email'])
+
+    return result_df
 
 def validate_api_key(api_key: str) -> bool:
     """Validate API key format"""
@@ -335,8 +367,8 @@ def step_3_upload_csv():
         if uploaded_file:
             try:
                 with st.spinner("Processing CSV file..."):
-                    # Extract emails from CSV
-                    st.session_state.csv_emails = processor.extract_emails_from_uploaded_file(uploaded_file)
+                    st.session_state.processing_status = {}
+                    st.session_state.csv_dataframe, st.session_state.csv_emails = processor.load_csv_with_emails(uploaded_file)
 
                     st.success(f"Found {len(st.session_state.csv_emails)} valid email addresses in CSV")
 
@@ -363,6 +395,17 @@ def step_3_upload_csv():
                             st.session_state.csv_emails,
                             st.session_state.email_accounts
                         )
+
+                        # Track unmapped emails for reporting
+                        if st.session_state.csv_dataframe is not None:
+                            status_map = st.session_state.processing_status
+                            for email in st.session_state.csv_dataframe.get('normalized_email', []):
+                                if email and email not in st.session_state.email_mappings:
+                                    status_map[email] = {
+                                        'status': 'not_found',
+                                        'message': 'Email account not found in Smartlead'
+                                    }
+                            st.session_state.processing_status = status_map
 
                         if st.session_state.email_mappings:
                             st.success(f"Mapped {len(st.session_state.email_mappings)} out of {len(st.session_state.csv_emails)} emails to account IDs")
@@ -392,7 +435,9 @@ def step_3_upload_csv():
                 with col2:
                     if st.button("📤 Upload Different CSV", key="upload_different"):
                         st.session_state.csv_emails = []
+                        st.session_state.csv_dataframe = None
                         st.session_state.email_mappings = {}
+                        st.session_state.processing_status = {}
                         st.rerun()
 
     except Exception as e:
@@ -428,6 +473,23 @@ def step_4_preview():
                     st.session_state.email_mappings
                 )
 
+                # Update status map for reporting
+                status_map = st.session_state.processing_status
+                for email in st.session_state.analysis['already_exists'].keys():
+                    status_map[email] = {
+                        'status': 'already_in_campaign',
+                        'message': 'Email account already in campaign'
+                    }
+
+                for email in st.session_state.analysis['to_add'].keys():
+                    if email not in status_map:
+                        status_map[email] = {
+                            'status': 'pending',
+                            'message': 'Pending addition to campaign'
+                        }
+
+                st.session_state.processing_status = status_map
+
             except Exception as e:
                 st.error(f"Error checking campaign accounts: {str(e)}")
                 logger.error(f"Campaign accounts check error: {e}")
@@ -453,8 +515,10 @@ def step_4_preview():
                 if st.button("📤 Upload Different CSV", key="different_csv_preview"):
                     st.session_state.step = 3
                     st.session_state.csv_emails = []
+                    st.session_state.csv_dataframe = None
                     st.session_state.email_mappings = {}
                     st.session_state.analysis = {}
+                    st.session_state.processing_status = {}
                     st.rerun()
         else:
             st.info("No new accounts to add. All provided emails are already in the campaign.")
@@ -479,7 +543,7 @@ async def step_5_process():
         processor = EmailDataProcessor()
 
         campaign_id = st.session_state.selected_campaign['id']
-        accounts_to_add = list(st.session_state.analysis['to_add'].values())
+        accounts_to_add = list(st.session_state.analysis['to_add'].items())
 
         if not accounts_to_add:
             st.info("No accounts to add.")
@@ -491,8 +555,8 @@ async def step_5_process():
             st.session_state.processing_complete = False
             st.session_state.processing_results = {}
 
-        # Create batches
-        batches = processor.create_batch_requests(accounts_to_add, batch_size=50)
+        # Create batches that keep email context
+        batches = [accounts_to_add[i:i + 50] for i in range(0, len(accounts_to_add), 50)]
         total_batches = len(batches)
 
         st.info(f"Adding {len(accounts_to_add)} accounts to campaign in {total_batches} batches...")
@@ -511,6 +575,7 @@ async def step_5_process():
         if not st.session_state.get('processing_complete', False):
             progress_bar = ProgressDisplay.render(progress_data)
 
+            status_map = st.session_state.processing_status
             for i, batch in enumerate(batches):
                 # Skip already processed batches
                 if i < st.session_state.get('processing_completed_batches', 0):
@@ -523,7 +588,8 @@ async def step_5_process():
 
                     with st.spinner(f"Processing batch {i + 1}/{total_batches}..."):
                         # Add accounts to campaign
-                        result = client.add_email_accounts_to_campaign(campaign_id, batch)
+                        account_ids = [account_id for _, account_id in batch]
+                        result = client.add_email_accounts_to_campaign(campaign_id, account_ids)
 
                         # Update session state with progress
                         st.session_state.processing_completed_batches = i + 1
@@ -533,11 +599,21 @@ async def step_5_process():
                             added_count = len(batch)
                             st.session_state.processing_accounts_added = progress_data['accounts_added'] + added_count
                             progress_data['accounts_added'] = st.session_state.processing_accounts_added
+                            for email, _ in batch:
+                                status_map[email] = {
+                                    'status': 'added',
+                                    'message': 'Successfully added to campaign'
+                                }
                             logger.info(f"Batch {i + 1} successful: {added_count} accounts added")
                         else:
                             error_msg = f"Batch {i + 1} failed: {result}"
                             progress_data['errors'].append(error_msg)
                             st.session_state.processing_errors = progress_data['errors']
+                            for email, _ in batch:
+                                status_map[email] = {
+                                    'status': 'failed',
+                                    'message': result.get('message') or result.get('error') or str(result)
+                                }
                             logger.error(error_msg)
 
                     # Update progress bar
@@ -554,7 +630,14 @@ async def step_5_process():
                     error_msg = f"Batch {i + 1} error: {str(e)}"
                     progress_data['errors'].append(error_msg)
                     st.session_state.processing_errors = progress_data['errors']
+                    for email, _ in batch:
+                        status_map[email] = {
+                            'status': 'failed',
+                            'message': str(e)
+                        }
                     logger.error(error_msg)
+
+            st.session_state.processing_status = status_map
 
             # Mark processing as complete
             st.session_state.processing_complete = True
@@ -584,6 +667,16 @@ async def step_5_process():
             else:
                 st.success("✅ No errors occurred")
 
+        result_df = build_results_dataframe()
+        if result_df is not None:
+            result_csv = result_df.to_csv(index=False)
+            st.download_button(
+                "⬇️ Download Results CSV",
+                data=result_csv,
+                file_name="campaign_upload_results.csv",
+                mime="text/csv"
+            )
+
         # Completion options
         st.markdown("---")
         col1, col2, col3 = st.columns(3)
@@ -592,6 +685,7 @@ async def step_5_process():
             if st.button("🔄 Process Another CSV", key="process_another"):
                 st.session_state.step = 3
                 st.session_state.csv_emails = []
+                st.session_state.csv_dataframe = None
                 st.session_state.email_mappings = []
                 st.session_state.analysis = {}
                 # Reset processing state
@@ -600,6 +694,7 @@ async def step_5_process():
                 st.session_state.processing_completed_batches = 0
                 st.session_state.processing_accounts_added = 0
                 st.session_state.processing_errors = []
+                st.session_state.processing_status = {}
                 st.rerun()
 
         with col2:
@@ -607,6 +702,7 @@ async def step_5_process():
                 st.session_state.step = 1
                 st.session_state.selected_campaign = None
                 st.session_state.csv_emails = []
+                st.session_state.csv_dataframe = None
                 st.session_state.email_mappings = []
                 st.session_state.analysis = {}
                 # Reset processing state
@@ -615,6 +711,7 @@ async def step_5_process():
                 st.session_state.processing_completed_batches = 0
                 st.session_state.processing_accounts_added = 0
                 st.session_state.processing_errors = []
+                st.session_state.processing_status = {}
                 st.rerun()
 
         with col3:
