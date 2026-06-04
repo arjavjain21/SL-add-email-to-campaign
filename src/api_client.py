@@ -128,7 +128,7 @@ class SmartleadClient:
         logger.info(f"Fetched {len(campaigns)} campaigns")
         return campaigns
 
-    def fetch_all_email_accounts(self, limit: int = 100) -> List[Dict]:
+    def fetch_all_email_accounts(self, limit: int = 500) -> List[Dict]:
         """
         Fetch all email accounts with pagination support.
 
@@ -136,7 +136,7 @@ class SmartleadClient:
         by fetching them in batches and combining the results.
 
         Args:
-            limit: Number of accounts to fetch per page (default: 100)
+            limit: Number of accounts to fetch per page (default: 500)
 
         Returns:
             List of all email account dictionaries
@@ -159,7 +159,7 @@ class SmartleadClient:
                 }
 
                 logger.debug(f"Fetching page {page_count} with offset {offset}")
-                accounts = self._make_request('GET', '/email-accounts', params=params)
+                accounts = self._make_request('GET', '/email-accounts/', params=params)
 
                 # Handle different response formats
                 if isinstance(accounts, dict):
