@@ -396,14 +396,52 @@ def step_3_upload_csv():
                             st.session_state.email_accounts
                         )
 
-                        # Track unmapped emails for reporting
+                        missing_emails = [
+                            email for email in st.session_state.csv_emails
+                            if email not in st.session_state.email_mappings
+                        ]
+
+                        if missing_emails:
+                            st.info(
+                                f"Looking up {len(missing_emails)} email(s) not found in the bulk Smartlead fetch..."
+                            )
+                            client = SmartleadClient(st.session_state.api_key)
+                            lookup_accounts = client.lookup_email_accounts_by_email(missing_emails)
+
+                            if lookup_accounts:
+                                existing_account_ids = {
+                                    account.get('id')
+                                    for account in st.session_state.email_accounts
+                                    if isinstance(account, dict)
+                                }
+                                for email, account in lookup_accounts.items():
+                                    account_id = account.get('id')
+                                    if account_id:
+                                        st.session_state.email_mappings[email] = account_id
+                                        if account_id not in existing_account_ids:
+                                            st.session_state.email_accounts.append(account)
+                                            existing_account_ids.add(account_id)
+
+                                missing_emails = [
+                                    email for email in st.session_state.csv_emails
+                                    if email not in st.session_state.email_mappings
+                                ]
+                                st.success(
+                                    f"Fallback lookup found {len(lookup_accounts)} additional account(s)."
+                                )
+
+                        # Track unmapped emails for reporting after fallback lookup has run
                         if st.session_state.csv_dataframe is not None:
                             status_map = st.session_state.processing_status
                             for email in st.session_state.csv_dataframe.get('normalized_email', []):
-                                if email and email not in st.session_state.email_mappings:
+                                if not email:
+                                    continue
+                                if email in st.session_state.email_mappings:
+                                    status_map.pop(email, None)
+                                else:
                                     status_map[email] = {
                                         'status': 'not_found',
-                                        'message': 'Email account not found in Smartlead'
+                                        'message': 'Email account not found in Smartlead bulk fetch or fallback lookup'
                                     }
                             st.session_state.processing_status = status_map
 

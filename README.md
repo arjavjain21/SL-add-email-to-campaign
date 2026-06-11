@@ -56,9 +56,24 @@ APP_PASSWORD=strong_password_for_app_access
 BATCH_SIZE=50
 MAX_FILE_SIZE_MB=200
 LOG_LEVEL=INFO
+EMAIL_FETCH_FAST_MODE=true
+EMAIL_FETCH_CONCURRENCY=30
+EMAIL_FETCH_EXPECTED_ACCOUNTS=30000
+EMAIL_FETCH_OVERFETCH_MULTIPLIER=1.25
+EMAIL_FETCH_CAMPAIGNS=false
+ACCOUNT_LOOKUP_FALLBACK_ENABLED=true
+ACCOUNT_LOOKUP_CONCURRENCY=20
+SLINBOXES_LOOKUP_BASE_URL=https://slinboxes.eagleinfoservice.com/api
 ```
 
 **Security note:** The app requires `APP_PASSWORD` to be defined in `st.secrets` (or `.streamlit/secrets.toml` for Streamlit Cloud). If the secret is missing or the entered password is incorrect, the application will stop and display a clear error so deployments fail fast rather than running unprotected.
+
+
+### Fast Email Account Fetching
+
+The app fetches Smartlead email-account pages concurrently by default so large accounts do not wait on 60+ serial page requests. Tune `EMAIL_FETCH_CONCURRENCY`, `EMAIL_FETCH_EXPECTED_ACCOUNTS`, and `EMAIL_FETCH_OVERFETCH_MULTIPLIER` if your workspace size or Smartlead rate limits change. Set `EMAIL_FETCH_FAST_MODE=false` to fall back to conservative sequential pagination.
+
+If an uploaded email is not present in the bulk Smartlead fetch, the app can query `SLINBOXES_LOOKUP_BASE_URL` via `/accounts/lookup?email=...` as a single-account fallback before marking the email as not found. Disable this with `ACCOUNT_LOOKUP_FALLBACK_ENABLED=false`.
 
 ### Getting Your Smartlead API Key
 

@@ -248,12 +248,12 @@ class SummaryDisplay:
         if analysis['to_add']:
             st.success("✅ Accounts to Add:")
             add_df = pd.DataFrame(list(analysis['to_add'].items()), columns=['Email', 'Account ID'])
-            st.dataframe(add_df, use_container_width=True)
+            st.dataframe(add_df, width="stretch")
 
         if analysis['already_exists']:
             st.info("ℹ️ Already in Campaign:")
             existing_df = pd.DataFrame(list(analysis['already_exists'].items()), columns=['Email', 'Account ID'])
-            st.dataframe(existing_df, use_container_width=True)
+            st.dataframe(existing_df, width="stretch")
 
         if analysis['not_found']:
             st.warning("⚠️ Email Accounts Not Found:")
