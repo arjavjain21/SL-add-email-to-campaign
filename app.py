@@ -673,6 +673,9 @@ async def step_5_process():
 
         st.info(f"Adding {len(accounts_to_add)} accounts to {total_campaigns} campaign(s)...")
 
+        # Initialize status_map once at the beginning
+        status_map = st.session_state.processing_status
+
         # Process campaigns sequentially
         for campaign_idx in range(current_idx, total_campaigns):
             campaign = selected_campaigns[campaign_idx]
@@ -712,7 +715,6 @@ async def step_5_process():
                 'errors': campaign_result.get('errors', [])
             }
 
-            status_map = st.session_state.processing_status
             retry_attempt = campaign_result.get('retry_attempt', 0)
             max_retries = 1  # Retry once as per user requirement
 
