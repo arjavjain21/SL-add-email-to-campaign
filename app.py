@@ -12,6 +12,7 @@ from src.data_processor import EmailDataProcessor
 from src.ui_components import (
     ApiKeyInput,
     CampaignSelector,
+    MultiCampaignSelector,
     EmailUploader,
     ProgressDisplay,
     SummaryDisplay,
@@ -127,8 +128,8 @@ def initialize_session_state():
         st.session_state.api_key = os.getenv('SMARTLEAD_API_KEY', '')
     if 'campaigns' not in st.session_state:
         st.session_state.campaigns = []
-    if 'selected_campaign' not in st.session_state:
-        st.session_state.selected_campaign = None
+    if 'selected_campaigns' not in st.session_state:
+        st.session_state.selected_campaigns = []  # Changed to list for multi-campaign
     if 'email_accounts' not in st.session_state:
         st.session_state.email_accounts = []
     if 'csv_emails' not in st.session_state:
@@ -145,6 +146,13 @@ def initialize_session_state():
         st.session_state.processing_status = {}
     if 'error_count' not in st.session_state:
         st.session_state.error_count = 0
+    # Multi-campaign processing state
+    if 'current_campaign_index' not in st.session_state:
+        st.session_state.current_campaign_index = 0
+    if 'campaign_results' not in st.session_state:
+        st.session_state.campaign_results = {}
+    if 'analysis_per_campaign' not in st.session_state:
+        st.session_state.analysis_per_campaign = {}
 
 def render_sidebar():
     """Render sidebar with navigation and settings"""
@@ -161,6 +169,7 @@ def render_sidebar():
             # Reset data when API key changes
             st.session_state.campaigns = []
             st.session_state.email_accounts = []
+            st.session_state.selected_campaigns = []
             st.session_state.step = 1
             st.session_state.processing_started = False
 
@@ -169,7 +178,7 @@ def render_sidebar():
         st.subheader("🧭 Navigation")
 
         steps = [
-            (1, "📋 Select Campaign", st.session_state.step >= 1),
+            (1, "📋 Select Campaigns", st.session_state.step >= 1),
             (2, "📥 Fetch Email Accounts", st.session_state.step >= 2),
             (3, "📤 Upload CSV", st.session_state.step >= 3),
             (4, "📊 Preview", st.session_state.step >= 4),
@@ -224,7 +233,7 @@ def validate_api_key(api_key: str) -> bool:
 
 def step_1_campaign_selection():
     """Step 1: Campaign selection"""
-    st.header("📋 Step 1: Select Campaign")
+    st.header("📋 Step 1: Select Campaigns")
 
     if not st.session_state.api_key:
         st.error("Please enter your Smartlead API key in the sidebar.")
@@ -260,12 +269,12 @@ def step_1_campaign_selection():
                 logger.error(f"Campaign fetch error: {e}")
                 return False
 
-    # Campaign selection
+    # Multi-campaign selection
     try:
-        selected_campaign = CampaignSelector.render(st.session_state.campaigns)
+        selected_campaigns = MultiCampaignSelector.render(st.session_state.campaigns)
 
-        if selected_campaign and st.button("Next Step →", key="step1_next", type="primary"):
-            st.session_state.selected_campaign = selected_campaign
+        if selected_campaigns and st.button("Next Step →", key="step1_next", type="primary"):
+            st.session_state.selected_campaigns = selected_campaigns
             st.session_state.step = 2
             st.rerun()
     except Exception as e:
@@ -281,9 +290,10 @@ def step_2_fetch_email_accounts():
     try:
         client = SmartleadClient(st.session_state.api_key)
 
-        # Display selected campaign info
-        campaign = st.session_state.selected_campaign
-        st.info(f"Selected Campaign: **{campaign.get('name')}** (ID: {campaign.get('id')})")
+        # Display selected campaigns info
+        selected_campaigns = st.session_state.selected_campaigns
+        campaign_names = [c.get('name', 'Unknown') for c in selected_campaigns]
+        st.info(f"**{len(selected_campaigns)} Campaign(s) Selected:** {', '.join(campaign_names)}")
 
         # Fetch email accounts button
         if not st.session_state.email_accounts:
@@ -493,37 +503,56 @@ def step_4_preview():
         processor = EmailDataProcessor()
         client = SmartleadClient(st.session_state.api_key)
 
-        # Get existing accounts in campaign
-        with st.spinner("Checking existing accounts in campaign..."):
+        selected_campaigns = st.session_state.selected_campaigns
+        analyses = {}  # Store analysis per campaign
+
+        # Get existing accounts for each campaign
+        with st.spinner(f"Checking existing accounts in {len(selected_campaigns)} campaign(s)..."):
             try:
-                # Use cached fetch for production optimization
-                existing_campaign_accounts = cached_fetch_campaign_email_accounts(
-                    st.session_state.api_key,
-                    st.session_state.selected_campaign['id']
-                )
+                for campaign in selected_campaigns:
+                    campaign_id = campaign['id']
 
-                # Create mapping of existing accounts using normalized email fields
-                existing_mapping = processor.build_campaign_email_lookup(existing_campaign_accounts)
+                    # Use cached fetch for production optimization
+                    existing_campaign_accounts = cached_fetch_campaign_email_accounts(
+                        st.session_state.api_key,
+                        campaign_id
+                    )
 
-                # Analyze changes
-                st.session_state.analysis = processor.analyze_changes(
-                    existing_mapping,
-                    st.session_state.email_mappings
-                )
+                    # Create mapping of existing accounts using normalized email fields
+                    existing_mapping = processor.build_campaign_email_lookup(existing_campaign_accounts)
 
-                # Update status map for reporting
-                status_map = st.session_state.processing_status
-                for email in st.session_state.analysis['already_exists'].keys():
-                    status_map[email] = {
-                        'status': 'already_in_campaign',
-                        'message': 'Email account already in campaign'
+                    # Analyze changes for this campaign
+                    analysis = processor.analyze_changes(
+                        existing_mapping,
+                        st.session_state.email_mappings
+                    )
+
+                    analyses[campaign_id] = {
+                        'campaign': campaign,
+                        'analysis': analysis
                     }
 
-                for email in st.session_state.analysis['to_add'].keys():
-                    if email not in status_map:
+                    logger.info(f"Campaign {campaign_id}: {analysis['total_to_add']} to add, {analysis['total_already_exists']} already exists")
+
+                # Store analyses in session state
+                st.session_state.analysis_per_campaign = analyses
+
+                # Update status map for reporting (use first campaign as reference for "pending" status)
+                status_map = st.session_state.processing_status
+                for campaign_id, data in analyses.items():
+                    for email in data['analysis']['already_exists'].keys():
+                        if email not in status_map:
+                            status_map[email] = {
+                                'status': 'already_in_some_campaign',
+                                'message': f'Email account already in campaign {campaign_id}'
+                            }
+
+                # Mark emails to add as pending across all campaigns
+                for email in st.session_state.email_mappings.keys():
+                    if email not in status_map or status_map[email]['status'] == 'not_found':
                         status_map[email] = {
                             'status': 'pending',
-                            'message': 'Pending addition to campaign'
+                            'message': 'Pending addition to campaign(s)'
                         }
 
                 st.session_state.processing_status = status_map
@@ -533,13 +562,44 @@ def step_4_preview():
                 logger.error(f"Campaign accounts check error: {e}")
                 return False
 
-        # Display summary
-        SummaryDisplay.render(st.session_state.analysis, st.session_state.selected_campaign)
+        # Display summary for all campaigns
+        st.subheader("📋 Campaign Summary")
+
+        total_to_add_all = 0
+        total_already_exists_all = 0
+
+        for campaign_id, data in analyses.items():
+            campaign = data['campaign']
+            analysis = data['analysis']
+
+            with st.expander(f"{campaign.get('name', 'Unknown')} (ID: {campaign_id})", expanded=len(selected_campaigns) <= 3):
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Emails to Add", analysis['total_to_add'])
+                with col2:
+                    st.metric("Already in Campaign", analysis['total_already_exists'])
+                with col3:
+                    status = campaign.get('status', 'Unknown')
+                    st.metric("Campaign Status", status)
+
+            total_to_add_all += analysis['total_to_add']
+            total_already_exists_all += analysis['total_already_exists']
+
+        # Overall summary
+        st.markdown("---")
+        st.subheader("📊 Overall Summary")
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Campaigns", len(selected_campaigns))
+        with col2:
+            st.metric("Total Adds Across All Campaigns", total_to_add_all)
+        with col3:
+            st.metric("Emails from CSV", len(st.session_state.csv_emails))
 
         # Confirmation
-        if st.session_state.analysis['total_to_add'] > 0:
+        if total_to_add_all > 0:
             st.markdown("---")
-            st.warning("⚠️ **Please review the changes above carefully before proceeding.**")
+            st.warning(f"⚠️ **You are about to add {total_to_add_all} account(s) to {len(selected_campaigns)} campaign(s). Please review carefully.**")
 
             col1, col2 = st.columns(2)
 
@@ -547,6 +607,8 @@ def step_4_preview():
                 if st.button("🚀 Execute Changes", key="execute_changes", type="primary"):
                     st.session_state.step = 5
                     st.session_state.processing_started = False  # Reset processing flag
+                    st.session_state.current_campaign_index = 0  # Reset campaign index
+                    st.session_state.campaign_results = {}  # Reset results
                     st.rerun()
 
             with col2:
@@ -555,14 +617,15 @@ def step_4_preview():
                     st.session_state.csv_emails = []
                     st.session_state.csv_dataframe = None
                     st.session_state.email_mappings = {}
-                    st.session_state.analysis = {}
+                    st.session_state.analysis_per_campaign = {}
                     st.session_state.processing_status = {}
                     st.rerun()
         else:
-            st.info("No new accounts to add. All provided emails are already in the campaign.")
+            st.info("No new accounts to add. All provided emails are already in all selected campaigns.")
 
             if st.button("🔄 Start Over", key="restart_no_changes"):
                 st.session_state.step = 1
+                st.session_state.selected_campaigns = []
                 st.rerun()
 
     except Exception as e:
@@ -573,15 +636,25 @@ def step_4_preview():
     return True
 
 async def step_5_process():
-    """Step 5: Execute the changes"""
+    """Step 5: Execute the changes sequentially for each campaign"""
     st.header("🚀 Step 5: Processing")
 
     try:
         client = SmartleadClient(st.session_state.api_key)
         processor = EmailDataProcessor()
 
-        campaign_id = st.session_state.selected_campaign['id']
-        accounts_to_add = list(st.session_state.analysis['to_add'].items())
+        selected_campaigns = st.session_state.selected_campaigns
+        analyses = st.session_state.analysis_per_campaign
+        current_idx = st.session_state.get('current_campaign_index', 0)
+
+        if not selected_campaigns:
+            st.error("No campaigns selected.")
+            return False
+
+        # Get accounts to add from analysis (same accounts for all campaigns)
+        # Use the first campaign's analysis as reference
+        first_campaign_id = selected_campaigns[0]['id']
+        accounts_to_add = list(analyses[first_campaign_id]['analysis']['to_add'].items())
 
         if not accounts_to_add:
             st.info("No accounts to add.")
@@ -591,127 +664,203 @@ async def step_5_process():
         if not st.session_state.processing_started:
             st.session_state.processing_started = True
             st.session_state.processing_complete = False
-            st.session_state.processing_results = {}
+            st.session_state.campaign_results = {}
 
-        # Create batches that keep email context
-        batches = [accounts_to_add[i:i + 50] for i in range(0, len(accounts_to_add), 50)]
-        total_batches = len(batches)
+        # Overall progress tracking
+        total_campaigns = len(selected_campaigns)
+        total_batches_per_campaign = (len(accounts_to_add) + 49) // 50  # 50 accounts per batch
+        total_operations = total_campaigns * total_batches_per_campaign
 
-        st.info(f"Adding {len(accounts_to_add)} accounts to campaign in {total_batches} batches...")
+        st.info(f"Adding {len(accounts_to_add)} accounts to {total_campaigns} campaign(s)...")
 
-        # Progress tracking
-        progress_data = {
-            'completed': st.session_state.get('processing_completed_batches', 0),
-            'total': total_batches,
-            'current_batch': st.session_state.get('processing_current_batch', 0),
-            'total_batches': total_batches,
-            'accounts_added': st.session_state.get('processing_accounts_added', 0),
-            'errors': st.session_state.get('processing_errors', [])
-        }
+        # Process campaigns sequentially
+        for campaign_idx in range(current_idx, total_campaigns):
+            campaign = selected_campaigns[campaign_idx]
+            campaign_id = campaign['id']
+            campaign_name = campaign.get('name', 'Unknown')
 
-        # Process batches if not complete
-        if not st.session_state.get('processing_complete', False):
-            progress_bar = ProgressDisplay.render(progress_data)
+            st.markdown(f"---")
+            st.subheader(f"📋 Processing Campaign {campaign_idx + 1}/{total_campaigns}: {campaign_name}")
+
+            # Initialize campaign result if not exists
+            if campaign_id not in st.session_state.campaign_results:
+                st.session_state.campaign_results[campaign_id] = {
+                    'campaign': campaign,
+                    'accounts_added': 0,
+                    'errors': [],
+                    'status': 'in_progress',
+                    'retry_attempt': 0
+                }
+
+            campaign_result = st.session_state.campaign_results[campaign_id]
+
+            # Skip if already completed
+            if campaign_result.get('status') == 'completed':
+                st.success(f"✅ Campaign {campaign_name} already completed")
+                continue
+
+            # Create batches
+            batches = [accounts_to_add[i:i + 50] for i in range(0, len(accounts_to_add), 50)]
+
+            # Campaign-specific progress
+            campaign_progress = {
+                'completed': campaign_result.get('completed_batches', 0),
+                'total': len(batches),
+                'current_batch': campaign_result.get('current_batch', 0),
+                'total_batches': len(batches),
+                'accounts_added': campaign_result.get('accounts_added', 0),
+                'errors': campaign_result.get('errors', [])
+            }
 
             status_map = st.session_state.processing_status
+            retry_attempt = campaign_result.get('retry_attempt', 0)
+            max_retries = 1  # Retry once as per user requirement
+
+            # Process batches for this campaign
             for i, batch in enumerate(batches):
                 # Skip already processed batches
-                if i < st.session_state.get('processing_completed_batches', 0):
+                if i < campaign_result.get('completed_batches', 0):
                     continue
 
                 try:
                     # Update progress
-                    progress_data['current_batch'] = i + 1
-                    progress_data['completed'] = i
+                    campaign_progress['current_batch'] = i + 1
+                    campaign_progress['completed'] = i
 
-                    with st.spinner(f"Processing batch {i + 1}/{total_batches}..."):
+                    with st.spinner(f"Processing batch {i + 1}/{len(batches)} for {campaign_name}..."):
                         # Add accounts to campaign
                         account_ids = [account_id for _, account_id in batch]
                         result = client.add_email_accounts_to_campaign(campaign_id, account_ids)
 
-                        # Update session state with progress
-                        st.session_state.processing_completed_batches = i + 1
-                        st.session_state.processing_current_batch = i + 1
+                        # Update campaign progress
+                        campaign_result['completed_batches'] = i + 1
+                        campaign_result['current_batch'] = i + 1
 
                         if result.get('ok', False) or result.get('success', False):
                             added_count = len(batch)
-                            st.session_state.processing_accounts_added = progress_data['accounts_added'] + added_count
-                            progress_data['accounts_added'] = st.session_state.processing_accounts_added
+                            campaign_result['accounts_added'] = campaign_progress['accounts_added'] + added_count
+                            campaign_progress['accounts_added'] = campaign_result['accounts_added']
                             for email, _ in batch:
                                 status_map[email] = {
                                     'status': 'added',
-                                    'message': 'Successfully added to campaign'
+                                    'message': f'Successfully added to {campaign_name}'
                                 }
-                            logger.info(f"Batch {i + 1} successful: {added_count} accounts added")
+                            logger.info(f"Batch {i + 1} for {campaign_name}: {added_count} accounts added")
                         else:
-                            error_msg = f"Batch {i + 1} failed: {result}"
-                            progress_data['errors'].append(error_msg)
-                            st.session_state.processing_errors = progress_data['errors']
+                            error_msg = f"Batch {i + 1} failed for {campaign_name}: {result}"
+                            campaign_progress['errors'].append(error_msg)
+                            campaign_result['errors'] = campaign_progress['errors']
                             for email, _ in batch:
                                 status_map[email] = {
                                     'status': 'failed',
-                                    'message': result.get('message') or result.get('error') or str(result)
+                                    'message': f'{result.get("message") or result.get("error") or str(result)} (Campaign: {campaign_name})'
                                 }
                             logger.error(error_msg)
-
-                    # Update progress bar
-                    progress_bar.progress((i + 1) / total_batches)
-                    ProgressDisplay.render(progress_data)
 
                     # Small delay to avoid overwhelming the API
                     await asyncio.sleep(0.5)
 
-                    # Force a rerun to show progress
+                    # Update session state and rerun to show progress
+                    st.session_state.campaign_results[campaign_id] = campaign_result
+                    st.session_state.processing_status = status_map
+                    st.session_state.current_campaign_index = campaign_idx
                     st.rerun()
 
                 except Exception as e:
-                    error_msg = f"Batch {i + 1} error: {str(e)}"
-                    progress_data['errors'].append(error_msg)
-                    st.session_state.processing_errors = progress_data['errors']
+                    error_msg = f"Batch {i + 1} error for {campaign_name}: {str(e)}"
+                    campaign_progress['errors'].append(error_msg)
+                    campaign_result['errors'] = campaign_progress['errors']
                     for email, _ in batch:
                         status_map[email] = {
                             'status': 'failed',
-                            'message': str(e)
+                            'message': f'{str(e)} (Campaign: {campaign_name})'
                         }
                     logger.error(error_msg)
 
+            # Campaign processing complete - check if we need to retry
+            if campaign_progress['errors'] and retry_attempt < max_retries:
+                st.warning(f"⚠️ Campaign {campaign_name} had errors. Retrying once...")
+                campaign_result['retry_attempt'] = retry_attempt + 1
+                campaign_result['completed_batches'] = 0  # Reset to retry from beginning
+                st.session_state.campaign_results[campaign_id] = campaign_result
+                st.session_state.current_campaign_index = campaign_idx  # Stay on this campaign
+                st.rerun()
+                return True
+
+            # Mark campaign as complete
+            campaign_result['status'] = 'completed'
+            st.session_state.campaign_results[campaign_id] = campaign_result
+
+            # Move to next campaign
+            st.session_state.current_campaign_index = campaign_idx + 1
             st.session_state.processing_status = status_map
 
-            # Mark processing as complete
-            st.session_state.processing_complete = True
-            st.session_state.processing_completed_batches = total_batches
+            # Rerun to show next campaign
+            st.rerun()
 
-        # Final update
-        progress_data['completed'] = total_batches
-        progress_data['accounts_added'] = st.session_state.get('processing_accounts_added', 0)
-        progress_data['errors'] = st.session_state.get('processing_errors', [])
-        ProgressDisplay.render(progress_data)
+        # All campaigns processed
+        st.session_state.processing_complete = True
+        st.session_state.processing_status = status_map
 
-        # Results
+        # Display final results
         st.markdown("---")
-        st.header("🎉 Results")
+        st.header("🎉 Final Results")
 
-        col1, col2 = st.columns(2)
+        total_added = sum(r.get('accounts_added', 0) for r in st.session_state.campaign_results.values())
+        total_errors = sum(len(r.get('errors', [])) for r in st.session_state.campaign_results.values())
+
+        col1, col2, col3 = st.columns(3)
 
         with col1:
-            if progress_data['accounts_added'] > 0:
-                st.success(f"✅ Successfully added **{progress_data['accounts_added']}** accounts to the campaign")
+            st.metric("Campaigns Processed", len(st.session_state.campaign_results))
+
+        with col2:
+            if total_added > 0:
+                st.success(f"✅ **{total_added}** accounts added across all campaigns")
             else:
                 st.warning("⚠️ No accounts were added")
 
-        with col2:
-            if progress_data['errors']:
-                st.error(f"❌ **{len(progress_data['errors'])}** errors occurred")
+        with col3:
+            if total_errors > 0:
+                st.error(f"❌ **{total_errors}** errors occurred")
             else:
                 st.success("✅ No errors occurred")
 
+        # Per-campaign results
+        st.markdown("---")
+        st.subheader("📋 Campaign-Specific Results")
+
+        for campaign_id, result in st.session_state.campaign_results.items():
+            campaign = result['campaign']
+            campaign_name = campaign.get('name', 'Unknown')
+
+            with st.expander(f"{campaign_name} (ID: {campaign_id})", expanded=True):
+                col1, col2, col3 = st.columns(3)
+
+                with col1:
+                    st.metric("Accounts Added", result.get('accounts_added', 0))
+
+                with col2:
+                    st.metric("Errors", len(result.get('errors', [])))
+
+                with col3:
+                    st.metric("Status", result.get('status', 'unknown').capitalize())
+
+                if result.get('errors'):
+                    st.error("Errors encountered:")
+                    for error in result['errors'][:5]:  # Show first 5 errors
+                        st.text(f"- {error}")
+                    if len(result['errors']) > 5:
+                        st.text(f"... and {len(result['errors']) - 5} more")
+
+        # Download results
         result_df = build_results_dataframe()
         if result_df is not None:
             result_csv = result_df.to_csv(index=False)
             st.download_button(
                 "⬇️ Download Results CSV",
                 data=result_csv,
-                file_name="campaign_upload_results.csv",
+                file_name="multi_campaign_results.csv",
                 mime="text/csv"
             )
 
@@ -725,30 +874,28 @@ async def step_5_process():
                 st.session_state.csv_emails = []
                 st.session_state.csv_dataframe = None
                 st.session_state.email_mappings = []
-                st.session_state.analysis = {}
+                st.session_state.analysis_per_campaign = {}
                 # Reset processing state
                 st.session_state.processing_started = False
                 st.session_state.processing_complete = False
-                st.session_state.processing_completed_batches = 0
-                st.session_state.processing_accounts_added = 0
-                st.session_state.processing_errors = []
+                st.session_state.current_campaign_index = 0
+                st.session_state.campaign_results = {}
                 st.session_state.processing_status = {}
                 st.rerun()
 
         with col2:
-            if st.button("📊 Select Different Campaign", key="different_campaign"):
+            if st.button("📊 Select Different Campaigns", key="different_campaigns"):
                 st.session_state.step = 1
-                st.session_state.selected_campaign = None
+                st.session_state.selected_campaigns = []
                 st.session_state.csv_emails = []
                 st.session_state.csv_dataframe = None
                 st.session_state.email_mappings = []
-                st.session_state.analysis = {}
+                st.session_state.analysis_per_campaign = {}
                 # Reset processing state
                 st.session_state.processing_started = False
                 st.session_state.processing_complete = False
-                st.session_state.processing_completed_batches = 0
-                st.session_state.processing_accounts_added = 0
-                st.session_state.processing_errors = []
+                st.session_state.current_campaign_index = 0
+                st.session_state.campaign_results = {}
                 st.session_state.processing_status = {}
                 st.rerun()
 

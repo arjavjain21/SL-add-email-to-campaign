@@ -6,6 +6,137 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+class MultiCampaignSelector:
+    """Component for selecting multiple Smartlead campaigns"""
+
+    @staticmethod
+    def render(campaigns: List[Dict], key_prefix: str = "campaign") -> List[Dict]:
+        """Render multi-campaign selection interface
+
+        Returns:
+            List of selected campaign dictionaries
+        """
+        if not campaigns:
+            st.warning("No campaigns found. Please check your API key.")
+            return []
+
+        st.subheader("📋 Select Campaigns")
+
+        # Get currently selected campaigns from session state
+        selected_campaigns = st.session_state.get('selected_campaigns', [])
+        selected_ids = {c.get('id') for c in selected_campaigns}
+
+        # Campaign filtering
+        col1, col2 = st.columns([2, 1])
+
+        with col1:
+            search_term = st.text_input(
+                "Search campaigns...",
+                key=f"{key_prefix}_search",
+                help="Search by campaign name"
+            )
+
+        with col2:
+            status_filter = st.selectbox(
+                "Filter by status",
+                options=["All", "ACTIVE", "PAUSED", "DRAFTED", "COMPLETED", "STOPPED"],
+                key=f"{key_prefix}_status"
+            )
+
+        # Filter campaigns
+        filtered_campaigns = campaigns
+        if search_term:
+            filtered_campaigns = [c for c in campaigns if search_term.lower() in c.get('name', '').lower()]
+
+        if status_filter != "All":
+            filtered_campaigns = [c for c in filtered_campaigns if c.get('status') == status_filter]
+
+        # Remove already selected campaigns from the dropdown
+        available_campaigns = [c for c in filtered_campaigns if c.get('id') not in selected_ids]
+
+        if not available_campaigns and not selected_campaigns:
+            st.info("No campaigns match your filters.")
+            return []
+
+        # Create display options for available campaigns
+        campaign_options = {}
+        for campaign in available_campaigns:
+            status_emoji = MultiCampaignSelector._get_status_emoji(campaign.get('status', ''))
+            display_name = f"{status_emoji} {campaign.get('name', 'Unnamed')} (ID: {campaign.get('id')})"
+            campaign_options[display_name] = campaign
+
+        # Add campaign section
+        if campaign_options:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                selected_display = st.selectbox(
+                    "Choose a campaign to add:",
+                    options=["-- Select a campaign --"] + list(campaign_options.keys()),
+                    key=f"{key_prefix}_select"
+                )
+            with col2:
+                st.write("")  # Spacer
+                st.write("")
+                add_clicked = st.button("➕ Add", key=f"{key_prefix}_add_btn", type="secondary")
+
+            # Handle add button
+            if add_clicked and selected_display != "-- Select a campaign --":
+                campaign_to_add = campaign_options[selected_display]
+                if campaign_to_add.get('id') not in selected_ids:
+                    st.session_state.selected_campaigns = selected_campaigns + [campaign_to_add]
+                    st.rerun()
+        else:
+            st.info("All campaigns have been selected or no campaigns match your filters.")
+
+        # Display selected campaigns
+        if selected_campaigns:
+            st.markdown("---")
+            st.subheader("✅ Selected Campaigns")
+
+            for i, campaign in enumerate(selected_campaigns):
+                with st.container():
+                    col1, col2, col3 = st.columns([3, 2, 1])
+
+                    with col1:
+                        status_emoji = MultiCampaignSelector._get_status_emoji(campaign.get('status', ''))
+                        st.write(f"**{status_emoji} {campaign.get('name', 'Unnamed')}**")
+                        st.caption(f"ID: {campaign.get('id')}")
+
+                    with col2:
+                        st.write(f"Status: `{campaign.get('status', 'Unknown')}`")
+                        if campaign.get('max_leads_per_day'):
+                            st.caption(f"Max: {campaign.get('max_leads_per_day')}/day")
+
+                    with col3:
+                        if st.button("🗑️", key=f"remove_{campaign.get('id')}", help="Remove this campaign"):
+                            st.session_state.selected_campaigns = [
+                                c for c in selected_campaigns if c.get('id') != campaign.get('id')
+                            ]
+                            st.rerun()
+
+                if i < len(selected_campaigns) - 1:
+                    st.divider()
+
+            # Clear all button
+            if st.button("🗑️ Clear All Selected", key=f"{key_prefix}_clear_all", type="secondary"):
+                st.session_state.selected_campaigns = []
+                st.rerun()
+
+        return selected_campaigns
+
+    @staticmethod
+    def _get_status_emoji(status: str) -> str:
+        """Get emoji for campaign status"""
+        status_emoji = {
+            'ACTIVE': '🟢',
+            'PAUSED': '⏸️',
+            'DRAFTED': '📝',
+            'COMPLETED': '✅',
+            'STOPPED': '⏹️'
+        }
+        return status_emoji.get(status, '❓')
+
+
 class ApiKeyInput:
     """Component for handling API key input and display"""
 
@@ -39,6 +170,7 @@ class ApiKeyInput:
             return api_key
 
         return input_value.strip()
+
 
 class CampaignSelector:
     """Component for selecting Smartlead campaigns"""
